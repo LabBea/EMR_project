@@ -1,0 +1,1142 @@
+---
+title: "Prediction of elevated depressive symptoums during early pregnancy using EMR from a public Chicago University Hospital"
+output: 
+  html_notebook: 
+  toc: TRUE
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+By: Beatriz Penalver Bernabe
+
+This code upload and preprocess EMR from ~11,000 of individuals to prepare for deep learning.Data were  collected from individials that recieve their perinatal care at the University of Illinois at Chicago between 2010 to 2020. 
+
+```{r}
+library(psych)
+```
+
+##INPUT FILES
+
+All the data are saved in REDCap under the project titled: *"CCTS CRDW - UIC CIRCLE Request 27531 - Using deep-learning to predict perinatal depression (PI: Penalver Bernabe)"*
+
+###Data dictionary
+
+```{r}
+dictionary<-read.table(file="C:/Users/Robin/Box/BeaLab/Data/EMR/RawData/27531_dictionary.csv",
+                         sep=",", stringsAsFactors = FALSE)
+
+colnames(dictionary)<-dictionary[1,]
+dictionary<-dictionary[-1,]
+
+head(dictionary)
+
+```
+
+###Demographic characterisitics
+```{r}
+# Demographic characterisitics
+demographics_v0<-read.table(file="C:/Users/Robin/Box/BeaLab/Data/EMR/RawData/27531_demographics.csv",
+                         sep=",", stringsAsFactors = FALSE)
+
+colnames(demographics_v0)<-demographics_v0[1,]
+demographics_v0<-demographics_v0[-1,]
+
+demographics<-demographics_v0
+
+head(demographics)
+
+# Place holder
+
+# Only mantain the variables that are routinely assesed
+# Columns that do not provide any information
+notmeasured<-apply(demographics,2,function(x){
+  nomeasurement<-sum(x=="")/length(x)})
+
+names(notmeasured)[notmeasured>0.1]
+
+demographics<-demographics[,notmeasured<0.1]
+
+demographics$age=as.numeric(demographics$age)
+
+ethnicity<-dummy.code(demographics$demo_ethnic)
+colnames(ethnicity)[2]<-"hispanic"
+ethnicity<-ethnicity[,2]
+
+write.csv(ethnicity,file = 'C:/Users/Robin/Box/EMR/data/ethnicity.csv')
+
+race<-dummy.code(demographics$demo_racial)
+colnames(race)<-c("black","other_race","white","asian","race_noinfo","native_americans","race_noinfo","native_hawaiian")
+race<-race[,-c(5,7)]
+
+marital_status<-dummy.code(demographics$demo_relationshipstatus)
+colnames(marital_status)<-c("single","married","maritalstatus_noinfo","separated","divorced","comitted_relation")
+marital_status<-marital_status[,-2]
+
+work<-dummy.code(demographics$demo_work)
+colnames(work)<-c("unemployment","fulltime_job","nonifo","partime_job")
+work<-work[,-3]
+
+home_religion<-dummy.code(demographics$mr_v1_home_religion)
+
+language<-dummy.code(demographics$mr_v1_language)
+colnames(language)<-c("english","spanish","noinfo","chinese","other")
+language<-language[,-c(3,5)]
+
+language<-dummy.code(demographics$mr_v1_language)
+colnames(language)<-c("english","spanish","noinfo","chinese","other")
+language<-language[,-c(3,5)]
+
+genetic_background<-dummy.code(demographics$mr_v1_safety_pt_ethnicity)
+colnames(genetic_background)<-c("african","other_geneticbackground","caucasian","hispanic","asian")
+
+healthcarecosts<-dummy.code(demographics$demo_healthcarecosts)
+colnames(healthcarecosts)<-c("medicaid","private_insurance","nohealth_insurance","other", "medicare")
+healthcarecosts<-healthcarecosts[,-4]
+
+#insurance_provider<-dummy.code(demographics$mr_v1_insurancename)
+#insurance_provider<-insurance_provider[,which(colnames(insurance_provider)!="")]
+
+demographics<-data.frame(demographics[,c("record_id","age")], ethnicity, race,marital_status, work, home_religion, language, genetic_background, healthcarecosts)
+
+## non_his_black = 5703/11501 = 0.4958699    non_his_white = 1000/11051 = 0.09048955 hispanic = 3190/11501 = 0.2773672
+head(demographics)
+
+demographics_relevant_variables<-c(c("record_id","age", "hispanic"),
+                                   colnames(race), 
+                                   colnames(marital_status), 
+                                   colnames(work),
+                                   colnames(home_religion),
+                                   colnames(language),
+                                   colnames(genetic_background),
+                                   colnames(healthcarecosts))
+```
+
+
+###Estimated gestational age
+```{r}
+# Estimation gestational age
+ega<-read.table(file="C:/Users/Robin/Box/BeaLab/Data/EMR/RawData/27531_ega.csv",
+                         sep=",", stringsAsFactors = FALSE)
+
+colnames(ega)<-ega[1,]
+ega<-ega[-1,]
+```
+
+###Laboratory results
+```{r}
+labs<-read.table(file="C:/Users/Robin/Box/BeaLab/Data/EMR/RawData/27531_labs.csv",
+                         sep=",", stringsAsFactors = FALSE)
+
+colnames(labs)<-labs[1,]
+labs<-labs[-1,]
+
+head(labs)
+
+```
+
+###Genetic screening
+It might not be inlcuded in analysis unless that we have enough participants
+```{r}
+# Genetic screening
+genetic_screen<-read.table(file="C:/Users/Robin/Box/BeaLab/Data/EMR/RawData/27531_genscreen.csv",
+                         sep=",", stringsAsFactors = FALSE)
+
+colnames(genetic_screen)<-genetic_screen[1,]
+genetic_screen<-genetic_screen[-1,]
+
+head(genetic_screen)
+
+notmeasured<-apply(genetic_screen,2,function(x){
+  nomeasurement<-sum(x=="")/length(x)})
+
+names(notmeasured)[notmeasured>0.1]
+
+#genetic_screen<-genetic_screen[,notmeasured<0.1]
+
+```
+
+###Maternal delivery information
+```{r}
+# Maternal information at delivery
+maternal_delivery<-read.table(file="C:/Users/Robin/Box/BeaLab/Data/EMR/RawData/27531_maternal.csv",
+                         sep=",", stringsAsFactors = FALSE)
+
+colnames(maternal_delivery)<-maternal_delivery[1,]
+maternal_delivery<-maternal_delivery[-1,]
+
+head(maternal_delivery)
+
+notmeasured<-apply(maternal_delivery,2,function(x){
+  nomeasurement<-sum(x=="")/length(x)})
+
+names(notmeasured)[notmeasured>0.2]
+
+#maternal_delivery<-maternal_delivery[,notmeasured<0.1]
+
+
+```
+###Neonate information
+```{r}
+# Neonate information at delivery
+neonate_delivery_v0<-read.table(file="C:/Users/Robin/Box/BeaLab/Data/EMR/RawData/27531_neonate.csv",
+                         sep=",", stringsAsFactors = FALSE)
+
+colnames(neonate_delivery_v0)<-neonate_delivery_v0[1,]
+neonate_delivery_v0<-neonate_delivery_v0[-1,]
+
+neonate_delivery<-neonate_delivery_v0
+
+# Place holder
+# we should ask the students to classify this into a matrix
+neonate_symptoms<-sapply(neonate_delivery$mr_neo_neonate_symptoms, function(x){
+  list_terms<-strsplit(x,",", fixed = TRUE)[[1]]
+})
+
+numerical_values<-c("mr_neo_neonate_birthweight", "mr_neo_neonate_length", "mr_neo_apgar_1min",
+                    "mr_neo_apgar_5min", "mr_neo_delivery_ega_weeks","mr_neo_delivery_ega_days",
+                    "mr_neo_neonate_birthweight_1", "mr_neo_neonate_length_1", "mr_neo_apgar_1min_1",
+                    "mr_neo_apgar_5min_1", "mr_neo_delivery_ega_weeks_1","mr_neo_delivery_ega_days_1",
+                    "mr_neo_neonate_birthweight_2", "mr_neo_neonate_length_2", "mr_neo_apgar_1min_2",
+                    "mr_neo_apgar_5min_2", "mr_neo_delivery_ega_weeks_2","mr_neo_delivery_ega_days_2",
+                    "mr_neo_neonate_birthweight_3", "mr_neo_neonate_length_3", "mr_neo_apgar_1min_3",
+                    "mr_neo_apgar_5min_3", "mr_neo_delivery_ega_weeks_3","mr_neo_delivery_ega_days_3")
+
+for (i in numerical_values){
+  neonate_delivery[,i]<-as.numeric(neonate_delivery[,i])
+}
+
+head(neonate_delivery)
+
+neonate_delivery_relavant_variables<-c("record_id", "mr_neo_neonateoutcome",
+                                       "mr_neo_neonate_sex", "mr_neo_neonate_birthweight",
+                                       "mr_neo_neonate_length", "mr_neo_apgar_1min",
+                                       "mr_neo_apgar_5min", "mr_neo_delivery_ega_weeks",
+                                       "mr_neo_delivery_ega_days")
+```
+
+###Patient Health Questionnaires
+```{r}
+# Patient Health Questionnaires
+phq9<-read.table(file="C:/Users/Robin/Box/BeaLab/Data/EMR/RawData/27531_phq.csv",
+                         sep=",", stringsAsFactors = FALSE)
+
+colnames(phq9)<-phq9[1,]
+phq9<-phq9[-1,]
+
+head(phq9)
+```
+
+###Social history
+```{r}
+# Social History
+social_history_v0<-read.table(file="C:/Users/Robin/Box/BeaLab/Data/EMR/RawData/27531_social_history.csv",
+                         sep=",", stringsAsFactors = FALSE)
+
+colnames(social_history_v0)<-social_history_v0[1,]
+social_history_v0<-social_history_v0[-1,]
+social_history<-social_history_v0
+
+numerical_values<-c("mr_v1_sh_tobacco_years_used", "mr_v1_sh_tobacco_age_started",
+                    "mr_v1_sh_tobacco_age_stopped", "mr_v1_sh_alcohol_frequency",
+                    "mr_v1_sh_alcohol_age_started", "mr_v1_sh_alcohol_age_stopped",
+                    "mr_v1_sh_alcohol_age_interfere", "mr_v1_sh_sa_frequency", "mr_v1_sh_sa_age_start",
+                    "mr_v1_sh_sa_age_stop")
+                    
+for (i in numerical_values){
+  social_history[,i]<-as.numeric(social_history[,i])
+}
+
+
+colnames(social_history)<-gsub("socialhistory","sh",colnames(social_history), fixed = TRUE)
+
+head(social_history)
+```
+
+###Prior medical history in prior pregnancies
+```{r}
+# Prior Medical History
+prior_medical_history<-read.table(file="C:/Users/Robin/Box/BeaLab/Data/EMR/RawData/27531_preme.csv",
+                         sep=",", stringsAsFactors = FALSE)
+
+colnames(prior_medical_history)<-prior_medical_history[1,]
+prior_medical_history<-prior_medical_history[-1,]
+
+head(prior_medical_history)
+```
+
+
+###Prior infections
+```{r}
+# Additional pregnancy information and infections
+prior_medical_history_infections<-read.table(file="C:/Users/Robin/Box/BeaLab/Data/EMR/RawData/27531_other.csv",
+                         sep=",", stringsAsFactors = FALSE)
+
+colnames(prior_medical_history_infections)<-prior_medical_history_infections[1,]
+prior_medical_history_infections<-prior_medical_history_infections[-1,]
+
+head(prior_medical_history_infections)
+```
+
+###Vitals
+```{r}
+# Vitals
+vitals<-read.table(file="C:/Users/Robin/Box/BeaLab/Data/EMR/RawData/27531_vitals.csv",
+                         sep=",", stringsAsFactors = FALSE)
+
+colnames(vitals)<-vitals[1,]
+vitals<-vitals[-1,]
+
+head(vitals)
+```
+### Miscellaneous
+Contains some of the other datasets as well
+```{r}
+# miscellaneous
+miscellaneous_v0<-read.table(file="C:/Users/Robin/Box/BeaLab/Data/EMR/RawData/27531_miscellaneous.csv",
+                         sep=",", stringsAsFactors = FALSE)
+
+colnames(miscellaneous_v0)<-miscellaneous_v0[1,]
+miscellaneous_v0<-miscellaneous_v0[-1,]
+miscellaneous<-miscellaneous_v0
+
+colnames(miscellaneous)<-gsub("socialhistory","sh", colnames(miscellaneous), fixed = TRUE)
+
+remove_miscellaneous<-c("medical_records_v1_phq_complete","medical_records_v4_pp_complete")
+
+miscellaneous<-miscellaneous[,!colnames(miscellaneous)%in% remove_miscellaneous]
+
+
+# remove those that are repeated from previous files and identify only use the ones that have the greatest amount of info
+
+previous_info<-c(colnames(demographics_v0),
+                 colnames(ega),
+                 colnames(prior_medical_history),
+                 colnames(prior_medical_history_infections),
+                 colnames(phq9),
+                 colnames(genetic_screen),
+                 colnames(labs),
+                 colnames(vitals),
+                 colnames(maternal_delivery),
+                 colnames(neonate_delivery_v0),
+                 colnames(social_history_v0))
+
+#micellanous<-data.frame(record_id=miscellaneous$record_id,
+#                        miscellaneous[,!previous_info %in% colnames(miscellaneous)],
+#                        stringsAsFactors = FALSE)
+
+head(miscellaneous)
+                 
+```
+
+###Generate a list container
+```{r}
+# Generate a list to contain all of them
+EMR<-list(demographics=demographics, 
+          ega=ega, 
+          prior_medical_history=prior_medical_history, 
+          prior_medical_history_infections=prior_medical_history_infections, 
+          phq9=phq9, 
+          maternal_delivery=maternal_delivery,
+          neonate_delivery=neonate_delivery, 
+          genetic_screen=genetic_screen, 
+          labs=labs, 
+          vitals=vitals,
+          micellanous=miscellaneous)
+
+EMR$demographics$hispanic <- EMR$demographics$ethnicity
+
+```
+
+##TABLE TRANSFORMATION
+Demographics, prior_medical_history, prior_medical_history_infections,  is already in a table with one participant per line
+
+###Gestational age
+Bring all the data to the same format
+```{r warning = FALSE}
+# Make the gestational weeks for each participant homogenous
+EMR$ega$mr_v1_ega_value<-gsub("WEEKS", "W", EMR$ega$mr_v1_ega_value)
+EMR$ega$mr_v1_ega_value<-gsub("WEEK", "W", EMR$ega$mr_v1_ega_value)
+EMR$ega$mr_v1_ega_value<-gsub("weeks", "W", EMR$ega$mr_v1_ega_value)
+EMR$ega$mr_v1_ega_value<-gsub("week", "W", EMR$ega$mr_v1_ega_value)
+EMR$ega$mr_v1_ega_value<-gsub("wks", "W", EMR$ega$mr_v1_ega_value)
+EMR$ega$mr_v1_ega_value<-gsub("WKS", "W", EMR$ega$mr_v1_ega_value)
+EMR$ega$mr_v1_ega_value<-gsub("WK", "W", EMR$ega$mr_v1_ega_value)
+EMR$ega$mr_v1_ega_value<-gsub("KS", "W", EMR$ega$mr_v1_ega_value)
+EMR$ega$mr_v1_ega_value<-gsub("WEESK", "W", EMR$ega$mr_v1_ega_value)
+
+EMR$ega$mr_v1_ega_value<-gsub("DAYS", "D", EMR$ega$mr_v1_ega_value)
+EMR$ega$mr_v1_ega_value<-gsub("DAY", "D", EMR$ega$mr_v1_ega_value)
+EMR$ega$mr_v1_ega_value<-gsub("DAUS", "D", EMR$ega$mr_v1_ega_value)
+EMR$ega$mr_v1_ega_value<-gsub("DASY", "D", EMR$ega$mr_v1_ega_value)
+EMR$ega$mr_v1_ega_value<-gsub("YAS", "D", EMR$ega$mr_v1_ega_value)
+EMR$ega$mr_v1_ega_value<-gsub("days", "D", EMR$ega$mr_v1_ega_value)
+EMR$ega$mr_v1_ega_value<-gsub("day", "D", EMR$ega$mr_v1_ega_value)
+EMR$ega$mr_v1_ega_value<-gsub("DYS", "D", EMR$ega$mr_v1_ega_value)
+EMR$ega$mr_v1_ega_value<-gsub("/", "a", EMR$ega$mr_v1_ega_value)
+EMR$ega$mr_v1_ega_value<-gsub(",", "", EMR$ega$mr_v1_ega_value)
+
+# Transform into gestational days
+ega_days<-sapply(seq(1,length(EMR$ega$mr_v1_ega_value),by=1), function(iega){
+  ega<-EMR$ega$mr_v1_ega_value[iega]
+  if (iega%%5000==0){
+    print(iega)
+  }
+  if (!is.na(as.numeric(ega))){
+    ega_days=7*as.numeric(ega)
+  } else {
+     chacter_vector<-
+       strsplit(ega, "", fixed = FALSE, perl = FALSE, useBytes = FALSE)[[1]]
+    if ("W" %in% chacter_vector){
+      weeks=as.numeric(strsplit(ega,"W")[[1]][1])
+      if("D" %in% chacter_vector){
+        days= as.numeric(gsub("D","",strsplit(ega[1],"W")[[1]][2]))
+        ega_days=7*weeks+days
+      } else{
+        ega_days=7*weeks
+        #if (ega_days>287){
+          #print("Error in ", iega)
+          #print(ega_days)
+        #}
+      }
+    } else {
+      ega_days<-NA
+    }
+  }
+  return(ega_days)
+})
+
+EMR$ega[,"ega_days"]<-ega_days
+conception_date<-c()
+conception_date<-as.Date(EMR$neonate_delivery$mr_neo_neonate_dob)-7*EMR$neonate_delivery$mr_neo_delivery_ega_weeks-
+                           EMR$neonate_delivery$mr_neo_delivery_ega_days
+
+EMR$neonate_delivery[,"conception_date"]<-as.Date(conception_date)
+
+
+quality_data<-sapply(unique(EMR$ega$record_id)[-length(unique(EMR$ega$record_id))],function(x){
+  #if (as.numeric(x)%%500==0){
+  #  print(x)
+  #}
+  conception_date<-EMR$neonate_delivery[which(EMR$neonate_delivery$record_id==x),"conception_date"]
+  visit_dates<-EMR$ega[which(EMR$ega$record_id==x),"mr_v1_ega_date"]
+  quality_data<-ega_days[which(EMR$ega$record_id==x)]-as.numeric(as.Date(visit_dates)-as.Date(rep(conception_date, length(visit_dates))))
+  rr<-rep(0, length(quality_data))
+  for (i in 1:length(quality_data)){
+    rr[i]<-ifelse(as.numeric(quality_data[i])==0, "exact", 
+                            ifelse(abs(as.numeric(quality_data[i]))<2, "less_than_1_day", "incorrect"))
+  }
+  ID_unique<-paste(EMR$ega$record_id[which(EMR$ega$record_id==x)],
+                   EMR$ega$mr_v1_ega_date[which(EMR$ega$record_id==x)],sep="_")
+  adjusted_age_days<-EMR$ega[which(EMR$ega$record_id==x),"ega_days"]+quality_data
+  rr<-cbind(ID_unique=ID_unique, 
+            record_id=rep(x,length(quality_data)),
+            reported_ega=EMR$ega[which(EMR$ega$record_id==x),"ega_days"],
+            adjusted_age_days=adjusted_age_days,
+            quality_ega=rr)
+  return(rr)
+})
+
+quality_data_unlist<-do.call(rbind, quality_data)
+
+# Order results by participant and time
+EMR$ega<-EMR$ega[order(EMR$ega$record_id, EMR$ega$mr_v1_ega_date),]
+
+EMR$ega[,"ID_unique"]<-paste(EMR$ega$record_id,EMR$ega$mr_v1_ega_date, sep="_")
+merge_ega<-merge(EMR$ega, quality_data_unlist[,-which(colnames(quality_data_unlist)=="record_id")], by="ID_unique", all.x = TRUE)
+
+EMR$ega<-merge_ega
+
+```
+
+###Patient Health Questionnaire 9 (phq9)
+Usually patients are asked to complete PHQ-9 at the first perintal visit and at the postpartum visit. However, not all the data are recorded: a) if the patient doesn't endorse any of the first questions (phq-2); b) only final score is entered instead of the entire score for each indiviudal item
+
+```{r}
+# Generate a line per visit and participants that can be match with the other tables. 
+#-------------------------------------------------------------------------------------
+
+# Split the date of the appointment
+EMR$phq9<-EMR$phq9[order(EMR$phq9$record_id, EMR$phq9$phq_date),]
+
+date_time<-strsplit(EMR$phq9$phq_date," ")
+date_phq9<-sapply(seq(1:length(date_time)), function(x){
+  r<-date_time[[x]][1]
+  return(r)
+})
+EMR$phq9[,"date_assesment"]<-date_phq9
+unique_entities<-unique(paste("ID",EMR$phq9$record_id, date_phq9, sep="_"))
+EMR$phq9[,"ID_date"]<-paste("ID",EMR$phq9$record_id, date_phq9, sep="_")
+labels<-unique(EMR$phq9$phq)
+labels<-labels[order(labels)]
+
+phq9_matrix<-matrix(NA, ncol=length(unique_entities), nrow=length(labels))
+rownames(phq9_matrix)<-labels
+colnames(phq9_matrix)<-unique_entities
+
+counter=0
+for (ientities in unique_entities){
+  counter=counter+1
+  if (counter%%1000==0){
+    print (counter)
+  }
+  phq9_id<-EMR$phq9[which(EMR$phq9$ID_date==ientities),c("phq","phq_score")]
+  phq9_matrix[phq9_id$phq,ientities]<-as.numeric(phq9_id$phq_score)
+}
+
+ID_date<-strsplit(colnames(phq9_matrix),"_")
+ID_date<-do.call(rbind,ID_date)
+
+phq9_data<-data.frame(ID=ID_date[,2], date=ID_date[,3], t(phq9_matrix),
+                      stringsAsFactors = FALSE)
+
+phq9_ega<-rep(0,nrow(phq9_data))
+for (i in 1:nrow(phq9_data)){
+   irecord_id<-phq9_data$ID[i]
+   phq9_ega[i]<-as.numeric(as.Date(phq9_data$date[i])-
+                             as.Date(EMR$neonate_delivery[EMR$neonate_delivery$record_id==irecord_id,"conception_date"]))
+   if (!is.na(phq9_ega[i])){
+     phq9_ega[i]<-ifelse(phq9_ega[i]<0,NA,phq9_ega[i])
+   }
+}
+
+phq9_data<-data.frame(phq9_data,ega_days=phq9_ega,stringsAsFactors = FALSE)
+
+phq9_data<-phq9_data[order(as.numeric(phq9_data$ID), phq9_data$date),]
+
+phq9_data[,"phq9_total_nob"]<-apply(phq9_data[,grep("phq9_clinic_nob", colnames(phq9_data))],1,function(x){
+  rr<-sum(x)
+  return(rr)
+})
+
+head(phq9_data)
+
+sum(!is.na(phq9_data$phq9_total_nob) && !is.na(phq9_data$ega_days))
+
+#write.table(phq9_data, file="C:/Users/Robin/Box/EMR/data/phq9_data.txt",
+#            col.names=TRUE, row.names = FALSE, sep="\t")
+
+```
+
+###Laboratory results
+During routine perinatal care, providers order two blood draws: a) at the initial visit; and b) at ~28 gestational weeks for GDM and low iron levels
+ 
+```{r}
+# Generate a line per visit and participants that can be match with the other tables 
+#-------------------------------------------------------------------------------------
+
+# Order results by participant and time
+EMR$labs<-EMR$labs[order(EMR$labs$record_id, EMR$labs$result_date),]
+
+# Need to work on the part later on. There is some information that is missing
+# Talk to CCTS
+
+EMR$labs<-EMR$labs[EMR$labs$lab_name!="",]
+
+# Split the date of the appointment
+date_time<-strsplit(EMR$labs$result_date," ")
+date_labs<-sapply(seq(1:length(date_time)), function(x){
+  r<-date_time[[x]][1]
+  return(r)
+})
+EMR$labs[,"date_assesment"]<-date_labs
+unique_entities<-unique(paste("ID",EMR$labs$record_id, date_labs, sep="_"))
+EMR$labs[,"ID_date"]<-paste("ID",EMR$labs$record_id, date_labs, sep="_")
+labels<-unique(EMR$labs$lab_name)
+labels<-labels[order(labels)]
+
+labs_matrix<-matrix(NA, ncol=length(unique_entities), nrow=length(labels))
+rownames(labs_matrix)<-labels
+colnames(labs_matrix)<-unique_entities
+
+counter=0
+for (ientities in unique_entities){
+  counter=counter+1
+  if (counter%%500==0){
+    print (counter)
+  }
+  labs_id<-EMR$labs[which(EMR$labs$ID_date==ientities),c("lab_name","result_value", "result_units")]
+  labs_matrix[labs_id$lab_name,ientities]<-labs_id$result_value
+}
+
+ID_date<-strsplit(colnames(labs_matrix),"_")
+ID_date<-do.call(rbind,ID_date)
+
+labs_data<-data.frame(ID=ID_date[,2], date=ID_date[,3], t(labs_matrix),
+                      stringsAsFactors = FALSE)
+
+labs_data$ab_screen[which(labs_data$ab_screen=="Negative")]=0
+labs_data$ab_screen[which(labs_data$ab_screen=="Positive")]=1
+
+aborh_d<-dummy.code(labs_data$aborh_d)
+colnames(aborh_d)<-paste("aborh_d_",colnames(aborh_d))
+
+labs_data$aneu<-dummy.code(labs_data$aneu)[,"Detected"]
+
+labs_data$COVID.19.PCR<-dummy.code(labs_data$COVID.19.PCR)[,"DETECTED"]
+
+cystic_fibrosis_screen<-dummy.code(labs_data$cystic_fibrosis_screen)
+colnames(cystic_fibrosis_screen)<-paste("cystic_fibrosis_screen_",colnames(cystic_fibrosis_screen))
+
+diff_method<-dummy.code(labs_data$diff_method)
+colnames(diff_method)<-paste("diff_method_",colnames(diff_method))
+
+
+labs_data$hep_b_surf_ag<-dummy.code(labs_data$hep_b_surf_ag)[,"POSITIVE"]
+hep_c_antibody<-dummy.code(labs_data$hep_c_antibody)
+colnames(hep_c_antibody)<-paste("hep_c_antibody_",
+                                             colnames(hep_c_antibody))
+
+
+labs_data$hiv_1_antibody<-dummy.code(labs_data$hiv_1_antibody)[,"REACTIVE"]
+labs_data$hiv_1_antigen<-dummy.code(labs_data$hiv_1_antigen)[,"REACTIVE"]
+hiv_antigen_antibody_screen<-dummy.code(labs_data$hiv_antigen_antibody_screen)
+colnames(hiv_antigen_antibody_screen)<-paste("hiv_antigen_antibody_screen_",
+                                             colnames(hiv_antigen_antibody_screen))
+
+
+spyhillis_initial_serology<-dummy.code(labs_data$spyhillis_initial_serology)
+colnames(spyhillis_initial_serology)<-paste("spyhillis_initial_serology_",
+                                             colnames(spyhillis_initial_serology))
+
+
+urine_dipstick_bilirubin_poct<-dummy.code(labs_data$urine_dipstick_bilirubin_poct)
+colnames(urine_dipstick_bilirubin_poct)<-paste("urine_dipstick_bilirubin_poct_",
+                                             colnames(urine_dipstick_bilirubin_poct))
+
+urine_dipstick_blood_poct<-dummy.code(labs_data$urine_dipstick_blood_poct)
+colnames(urine_dipstick_blood_poct)<-paste("urine_dipstick_blood_poct_",
+                                             colnames(urine_dipstick_blood_poct))
+
+urine_dipstick_clarity_poct<-dummy.code(labs_data$urine_dipstick_clarity_poct)
+colnames(urine_dipstick_clarity_poct)<-paste("urine_dipstick_clarity_poct_",
+                                             colnames(urine_dipstick_clarity_poct))
+
+urine_dipstick_color_poct<-dummy.code(labs_data$urine_dipstick_color_poct)
+colnames(urine_dipstick_color_poct)<-paste("urine_dipstick_color_poct_",
+                                             colnames(urine_dipstick_color_poct))
+
+urine_dipstick_glucose_poct<-dummy.code(labs_data$urine_dipstick_glucose_poct)
+colnames(urine_dipstick_glucose_poct)<-paste("urine_dipstick_glucose_poct_",
+                                             colnames(urine_dipstick_glucose_poct))
+
+urine_dipstick_ketones_poct<-dummy.code(labs_data$urine_dipstick_ketones_poct)
+colnames(urine_dipstick_ketones_poct)<-paste("urine_dipstick_ketones_poct_",
+                                             colnames(urine_dipstick_ketones_poct))
+
+urine_dipstick_leukocytes_poct<-dummy.code(labs_data$urine_dipstick_leukocytes_poct)
+colnames(urine_dipstick_leukocytes_poct)<-paste("urine_dipstick_leukocytes_poct_",
+                                                colnames(urine_dipstick_leukocytes_poct))
+
+labs_data$urine_dipstick_nitrite_poct<-dummy.code(labs_data$urine_dipstick_nitrite_poct)[,"Positive"]
+
+urine_dipstick_protein_poct<-dummy.code(labs_data$urine_dipstick_protein_poct)
+colnames(urine_dipstick_protein_poct)<-paste("urine_dipstick_protein_poct_",
+                                             colnames(urine_dipstick_protein_poct))
+
+urine_dipstick_urobilinogen_poct<-dummy.code(labs_data$urine_dipstick_urobilinogen_poct)
+colnames(urine_dipstick_urobilinogen_poct)<-paste("urine_dipstick_urobilinogen_poct_",
+                                                  colnames(urine_dipstick_urobilinogen_poct))
+
+labs_data<-data.frame(
+  labs_data[,-which(colnames(labs_data)=="aborh_d"|colnames(labs_data)=="cystic_fibrosis_screen"|
+             colnames(labs_data)=="diff_method"|
+              colnames(labs_data)=="hep_c_antibody"|
+              colnames(labs_data)=="hiv_antigen_antibody_screen"|
+              colnames(labs_data)=="spyhillis_initial_serology"|
+              colnames(labs_data)=="urine_dipstick_bilirubin_poct"|
+              colnames(labs_data)=="urine_dipstick_blood_poct"|
+              colnames(labs_data)=="urine_dipstick_clarity_poct"|
+              colnames(labs_data)== "urine_dipstick_color_poct"|
+              colnames(labs_data)== "urine_dipstick_glucose_poct"|
+               colnames(labs_data)=="urine_dipstick_ketones_poct"|
+               colnames(labs_data)=="urine_dipstick_leukocytes_poct"|
+               colnames(labs_data)=="urine_dipstick_protein_poct"|
+               colnames(labs_data)=="urine_dipstick_urobilinogen_poct")],
+  aborh_d,cystic_fibrosis_screen,diff_method,hep_c_antibody,hiv_antigen_antibody_screen,
+  spyhillis_initial_serology, urine_dipstick_bilirubin_poct,
+  urine_dipstick_blood_poct,urine_dipstick_clarity_poct, urine_dipstick_color_poct,
+  urine_dipstick_glucose_poct,urine_dipstick_ketones_poct, urine_dipstick_leukocytes_poct,
+  urine_dipstick_protein_poct,urine_dipstick_urobilinogen_poct)
+
+numerical_values<-c("X.baso", "X.eos","X.lymph", "X.monos", "X.neut", "X1hr_gluc_challenge",
+                    "ab_screen","abs_baso", "abs_eos","abs_lymph", "abs_mono","abs_neut","hct",
+                    "hgb", "hgb_a", "hgb_a2", "hgb_f",
+                    "mch", "mchc", "mcv","mpv", "plt", "rbc", "rbeia","rdw","rpr",
+                    "urine_dipstick_ph_poct","vz_ab","wbc")
+
+for (i in numerical_values){
+  labs_data[,i]<-as.numeric(labs_data[,i])
+}
+
+
+labs_ega<-rep(0,nrow(labs_data))
+for (i in 1:nrow(labs_data)){
+  irecord_id<-labs_data$ID[i]
+  labs_ega[i]<-as.numeric(as.Date(labs_data$date[i])-
+                             as.Date(EMR$neonate_delivery[EMR$neonate_delivery$record_id==irecord_id,"conception_date"]))
+   if (!is.na(labs_ega[i])){
+     labs_ega[i]<-ifelse(labs_ega[i]<0,NA,labs_ega[i])
+   }
+}
+
+labs_data<-data.frame(labs_data,ega_days=labs_ega,stringsAsFactors = FALSE)
+
+labs_data<-labs_data[order(as.numeric(labs_data$ID), labs_data$date),]
+
+
+head(labs_data)
+#write.table(labs_data, file="C:/Users/Robin/Box/EMR/data/labs_data.txt",
+#            col.names=TRUE, row.names = FALSE, sep="\t")
+
+lab_relevant_columns<-c("ID", "date", "X.baso", "X.eos", "X.lymph", 
+                        "X.monos", "X.neut", "X1hr_gluc_challenge", "ab_screen","abs_baso", "abs_eos",
+                        "abs_lymph","abs_mono",  "abs_neut", "aneu","COVID.19.PCR", "hct",
+                        "hep_b_surf_ag","hgb",  "hgb_a","hgb_a2", "hgb_f", "hiv_1_antibody", 
+                        "hiv_1_antigen", "hiv_2_antibody", "mch", "mchc", "mcv", "mpv", "plt",
+                        "rbc", "rbeia", "rdw","rpr", "urine_dipstick_nitrite_poct", "urine_dipstick_ph_poct",
+                        "vz_ab","wbc")  
+
+essential_columns<-c("X1hr_gluc_challenge", "hct",
+                        "hep_b_surf_ag","hgb",  "hgb_a","hgb_a2",  "hiv_1_antibody", 
+                        "hiv_1_antigen", "mch", "mchc", "mcv", "mpv", "plt",
+                        "rbc", "rdw", "urine_dipstick_nitrite_poct", "urine_dipstick_ph_poct","wbc") 
+
+participants_enough<-sapply(unique(labs_data$ID),function(x){
+  apply(labs_data[which(labs_data$ID==x),essential_columns],2,function(y){
+    sum(!is.na(as.numeric(y)))/length(y)})})
+
+apply(participants_enough,1,function(x){sum(as.numeric(x)>0)})/ncol(participants_enough)*100
+
+```
+
+###Vitals
+At each perintal visit, the patient's vital are routinely measured
+
+```{r}
+# Generate a line per visit and participants that can be match with the other tables 
+#-------------------------------------------------------------------------------------
+
+# Order results by participant and time
+EMR$vitals<-EMR$vitals[order(EMR$vitals$record_id, EMR$vitals$vital_date),]
+
+# Split the date of the appointment
+date_time<-strsplit(EMR$vitals$vital_date," ")
+date_vital<-sapply(seq(1:length(date_time)), function(x){
+  r<-date_time[[x]][1]
+  return(r)
+})
+EMR$vitals[,"date_assesment"]<-date_vital
+unique_entities<-unique(paste("ID",EMR$vitals$record_id, date_vital, sep="_"))
+EMR$vitals[,"ID_date"]<-paste("ID",EMR$vitals$record_id, date_vital, sep="_")
+labels<-unique(EMR$vitals$vital_name)
+labels<-labels[order(labels)]
+
+vital_matrix<-matrix(NA, ncol=length(unique_entities), nrow=length(labels))
+rownames(vital_matrix)<-labels
+colnames(vital_matrix)<-unique_entities
+
+counter=0
+for (ientities in unique_entities){
+  counter=counter+1
+  if (counter%%500==0){
+    print (counter)
+  }
+  vital_id<-EMR$vitals[which(EMR$vitals$ID_date==ientities),c("vital_name","vital_value", "result_units")]
+  vital_matrix[vital_id$vital_name,ientities]<-vital_id$vital_value
+}
+
+ID_date<-strsplit(colnames(vital_matrix),"_")
+ID_date<-do.call(rbind,ID_date)
+
+vital_data<-data.frame(ID=ID_date[,2], date=ID_date[,3], t(vital_matrix),
+                      stringsAsFactors = FALSE)
+
+vital_ega<-rep(0,nrow(vital_data))
+for (i in 1:nrow(vital_data)){
+   irecord_id<-vital_data$ID[i]
+   vital_ega[i]<-as.numeric(as.Date(vital_data$date[i])-
+                             as.Date(EMR$neonate_delivery[EMR$neonate_delivery$record_id==irecord_id,"conception_date"]))
+   if (!is.na(vital_ega[i][i])){
+     vital_ega[i][i]<-ifelse(vital_ega[i][i]<0,NA,vital_ega[i][i])
+   }
+}
+
+vital_data<-data.frame(vital_data,ega_days=vital_ega,stringsAsFactors = FALSE)
+
+vital_data<-vital_data[order(as.numeric(vital_data$ID), vital_data$date),]
+
+for (i in 1:nrow(vital_data)){
+  rr<-!is.finite(as.numeric(vital_data$bmi[i]))
+  if (rr){
+    vital_data$bmi[i]<-(as.numeric(vital_data$weight[i])*0.454)/((mean(as.numeric(vital_data$height[which(vital_data$ID==vital_data$ID[i])]), na.rm=TRUE)/100)^2)
+  }
+}
+
+head(vital_data)
+
+#write.table(vital_data, file="C:/Users/Robin/Box/EMR/data/vital_data.txt",
+#            col.names=TRUE, row.names = FALSE, sep="\t")
+
+```
+
+
+###Maternal complications
+
+```{r}
+# Identify the gestational weeks at each of the conditions
+
+gdm_ega<-rep(NA, nrow(maternal_delivery))
+preeclampsia_ega<-rep(NA, nrow(maternal_delivery))
+
+for (i in 1:nrow(maternal_delivery)){
+  if (maternal_delivery$mr_v4_gestdiabetes_diagnose[i]!=""){
+    irecord_id<-maternal_delivery$record_id[i]
+    gdm_ega[i]<-as.numeric(as.Date(maternal_delivery$mr_v4_gestdiabetes_diagnose[i])-
+                             as.Date(EMR$neonate_delivery$conception_date[which(EMR$neonate_delivery$record_id==irecord_id)]))
+    gdm_ega[i]<-ifelse(gdm_ega[i]<0,NA,gdm_ega[i])
+  }
+  if (maternal_delivery$mr_v4_preeclampsia_diagnose[i]!=""){
+    irecord_id<-maternal_delivery$record_id[i]
+    preeclampsia_ega[i]<-as.numeric(as.Date(maternal_delivery$mr_v4_preeclampsia_diagnose[i])-
+                                      as.Date(EMR$neonate_delivery$conception_date[which(EMR$neonate_delivery$record_id==irecord_id)]))
+    preeclampsia_ega[i]<-ifelse(preeclampsia_ega[i]<0,NA,preeclampsia_ega[i])
+    }
+}
+
+maternal_delivery[,"mr_v4_gestdiabetes_gestational_days"]<-gdm_ega
+maternal_delivery[,"mr_v4_preeclampsia_gestational_days"]<-preeclampsia_ega
+
+## add the glucose levels here 
+
+glucose_levels=labs_data[,c("ID","X1hr_gluc_challenge","ega_days")]
+glucose_levels<-glucose_levels[!is.na(glucose_levels$X1hr_gluc_challenge),]
+colnames(glucose_levels)<-c("ID", "glucose_challenge_1hr","glucose_challenge_ega")
+maternal_delivery<-merge(maternal_delivery, glucose_levels, by.x="record_id", by.y="ID",
+                         all.x=TRUE)
+
+```
+
+###For miscellaneous
+
+```{r}
+#mantained_misc<-c("record_id","mr_v1_pregnancyinfo_planned_pregnancy","mr_v1_pregnancyinfo_contraceptive","mr_v1_pregnancyinfo_breastfeeding",
+#                  "mr_v1_pregnancyinfo_infertility", "mr_v1_pregnancyinfo_interpregnancy","mr_v1_infecdisease_postb",
+#                  "mr_v1_infecdisease_genherpes", "mr_v1_infecdisease_genherpes_outbreak","mr_v1_infecdisease_chickenpox",
+#                  "mr_v1_infecdisease_chlamydia", "mr_v1_infecdisease_gonorrhea","mr_v1_infecdisease_hpv", "mr_v1_infecdisease_syphilis",
+#                  "mr_v1_mdro_family","mr_v1_mdro_abscess","mr_v1_mdro_burns","mr_v1_mdro_chronicskincond","mr_v1_mdro_cdiff", "mr_v1_mdro_esbl",
+#                  "mr_v1_mdro_mrsa","mr_v1_mdro_vre","mr_v1_preme_oneabortion", "mr_v1_preme_twoabortion",
+#                  "mr_v1_preme_threeabortion","mr_v1_preme_secondtri_eab", "mr_v1_preme_secondtri_sab",
+#                  "mr_v1_preme_grandmultiparity", "mr_v1_preme_preterm", "mr_v1_preme_interconceptual",
+#                  "mr_v1_preme_anomaly","mr_v1_premesigmed_hypertension","mr_v1_premesig_gd", "mr_v1_premesig_asthma",
+#                  "mr_v1_premesig_blood","mr_v1_premesig_pyelon", "mr_v1_premesig_other", "mr_v1_premesig_bmi20","mr_v1_premesig_bmi40",
+#                  "mr_v1_premesig_depression","mr_v1_preme_social_cig", "mr_v1_preme_social_etoh", "mr_v1_preme_social_drug",
+#                  "mr_v1_preme_social_dviolence","mr_v1_preme_social_sparent", "mr_v1_preme_social_support",
+#                  "mr_v1_preme_social_children","mr_v1_preme_social_work","mr_v1_preme_current_mgestation","mr_v1_preme_current_asurgery",
+#                  "mr_v1_preme_current_cervicallength","mr_v1_preme_current_iugr","mr_v1_preme_current_score","mr_v1_preme_current_sti",
+#                  "mr_v1_preme_current_wloss","mr_v1_preme_current_bleeding","mr_v1_preme_current_contraction","mr_v1_preme_current_previa",
+#                  "mr_v1_preme_current_polyhyd","mr_v1_preme_social_lifting","mr_v1_preme_current_fatigue", "mr_v1_preme_current_efq",
+#                  "mr_v1_preme_current_album", "mr_v1_preme_current_hypertension","mr_v1_preme_current_bacteriuria")
+#miscellaneous<-miscellaneous[,mantained_misc]
+
+```
+
+###Generate the final list with the updated files
+```{r}
+EMR_cleaned<-list(demographics=demographics,
+                ega=ega,
+                prior_medical_history=prior_medical_history,
+                prior_medical_history_infections=prior_medical_history_infections,
+                phq9=phq9_data,
+                labs=labs_data,
+                vital=vital_data,
+                maternal_delivery=maternal_delivery,
+                neonate_delivery=neonate_delivery,
+                genetic_screen=genetic_screen,
+                social_history=social_history,
+                miscellaneous = miscellaneous)
+EMR_cleaned$demographics$hispanic <- EMR_cleaned$demographics$ethnicity
+
+length(which(EMR_cleaned$demographics$black==1&EMR_cleaned$demographics$hispanic==0))  # 5703
+length(which(EMR_cleaned$demographics$white==1&EMR_cleaned$demographics$hispanic==0))  # 539
+length(which(EMR_cleaned$demographics$hispanic==1))   #  2022
+```
+
+
+###CONTAINER               
+```{r warning=FALSE}
+
+# Merge the datafiles to generate just one container
+container_1<-merge(
+  EMR_cleaned$demographics[,demographics_relevant_variables], 
+  EMR_cleaned$prior_medical_history, by="record_id")
+#container_2<-merge(EMR_cleaned$genetic_screen, container_1, by="record_id")
+container_4<-merge(prior_medical_history_infections, 
+                   container_1, by="record_id")
+container_5<-merge(maternal_delivery, container_4, by="record_id")
+container_6<-merge(neonate_delivery[,neonate_delivery_relavant_variables], 
+                   container_5, by="record_id")
+container_7<-merge(social_history, 
+                   container_6, by="record_id")
+container_8<-merge(miscellaneous, 
+                   container_7, by="record_id")
+
+unique_column_names<-colnames(container_7)
+unique_column_names<-gsub(".x","",unique_column_names, fixed = TRUE)
+unique_column_names<-gsub(".y","",unique_column_names, fixed = TRUE)
+unique_column_names<-unique(unique_column_names)
+
+container_norepeated<-data.frame(sapply(unique_column_names, function(x){
+  pos<-grep(x,colnames(container_7))
+  if (length(pos)==1){
+    y<-container_7[,pos]
+  } else{
+    icolumn<-container_7[,pos]
+    y<-apply(icolumn,1,function(z){
+      rr<-ifelse(all(is.finite(as.numeric(z))) && z[1]!=z[2],
+                 paste(z[1], z[2], sep=""),
+                 mean(as.numeric(z), na.rm=TRUE))
+      rr<-ifelse(is.nan(rr),"", as.numeric(rr))
+      return(rr)})
+  }
+  return(y)}
+), stringsAsFactors = FALSE)
+
+alldata <- merge(as.data.frame(phq9_data), container_norepeated, by.x="ID", by.y="record_id", all.x=TRUE)
+length(match(unique(alldata$ID),alldata$ID))
+unique_all <- alldata[match(unique(alldata$ID),alldata$ID),]   # 8330
+head(unique_all$ID)
+length(which(unique_all$black==1&unique_all$hispanic==0))  # 4473
+length(which(unique_all$white==1&unique_all$hispanic==0))  # 755
+length(which(unique_all$hispanic==1))   #  2289
+
+unique_all$phq2_total[is.na(unique_all$phq9_total)]
+
+unique_all$phq9_total[which(is.na(unique_all$phq2_total))]
+# Identify participants with full phq9_score
+phq9_fullscore<-phq9_data[!is.na(phq9_data$phq9_total_nob),]
+dim(phq9_fullscore)
+
+alldata <- merge(as.data.frame(phq9_fullscore), container_8, by.x="ID", by.y="record_id", all.x=TRUE)
+unique_all <- alldata[match(unique(alldata$ID),alldata$ID),]   # 5875
+length(unique_all$ID)
+
+length(which(unique_all$black==1&unique_all$hispanic==0))  # 3231
+length(which(unique_all$white==1&unique_all$hispanic==0))  # 489
+length(which(unique_all$hispanic==1))   #  1648
+
+# In the first trimester visit
+phq9_fullscore_first_trimester<-phq9_fullscore[!is.na(phq9_fullscore$ega_days) & (as.numeric(phq9_fullscore$ega_days)>6*7 &
+                                                                                    as.numeric(phq9_fullscore$ega_days)<24*7),]
+dim(phq9_fullscore_first_trimester)
+
+alldata <- merge(as.data.frame(phq9_fullscore_first_trimester), container_8, by.x="ID", by.y="record_id", all.x=TRUE)
+
+unique_all <- alldata[match(unique(alldata$ID),alldata$ID),]   # 4812
+length(unique_all$ID)
+
+length(which(unique_all$black==1&unique_all$hispanic==0))  # 2668
+length(which(unique_all$white==1&unique_all$hispanic==0))  # 401
+length(which(unique_all$hispanic==1))   #  1338
+
+
+# Identify the closest labs and closest vitals to include in the table
+matrix_phq9_labs_vitals<-matrix(NA, nrow(phq9_data), 
+                                ncol=(ncol(phq9_data)+
+                                        ncol(labs_data[,lab_relevant_columns])+
+                                        ncol(vital_data)))
+
+for (i in 1:nrow(phq9_fullscore_first_trimester)){
+  if (i%%500==0){
+    print (i)
+  }
+  idate<-phq9_fullscore_first_trimester$date[i]
+  irecord_id=phq9_fullscore_first_trimester$ID[i]
+  
+  # For the laboratory results
+  i_labs<-labs_data[which(labs_data$ID==irecord_id),lab_relevant_columns]
+  
+  # remove instance where none of the common values are measured
+  #i_labs<-i_labs[!is.na(rowSums(i_labs[,c("hct","hgb", "rbc","wbc")])),]
+  
+  # Identify the date of the closests lab
+  idiff_labs<-as.numeric(as.Date(i_labs$date)-as.Date(idate))
+  min_diff<-min(abs(idiff_labs), na.rm = TRUE)
+  
+  # If the difference is greater than a month, disregarded
+  if (min_diff[1]<7*8){
+    if(length(which(abs(idiff_labs)<7*8))>1){
+      idate_labs<-apply(i_labs[which(abs(idiff_labs)<7*8),],2,function(x){
+        r<-mean(as.numeric(x), na.rm = TRUE)
+        return(r)
+      })
+      } else{
+         idate_labs<-i_labs[which(abs(idiff_labs)==min_diff),]
+      }
+  } else{
+    idate_labs<-rep(NA, ncol(i_labs))
+  }
+  
+  # For the vitals results
+  i_vitals<-vital_data[which(vital_data$ID==irecord_id),]
+  
+  # Identify the date of the closests lab
+  idiff_vitals<-as.numeric(as.Date(i_vitals$date)-as.Date(idate))
+  min_diff_vitals<-min(abs(idiff_vitals), na.rm = TRUE)
+  
+  # If the difference is greater than a week, disregarded
+  if (min_diff_vitals[1]<7*2){
+    if(length(which(abs(idiff_vitals)<7*2))>1){
+      idate_vitals<-apply(i_vitals[which(abs(idiff_vitals)<7*4),], 2, function(x){
+        r<-mean(as.numeric(x), na.rm = TRUE)
+        return(r)
+      })
+      } else{
+        idate_vitals<-i_vitals[which(abs(idiff_vitals)==min_diff_vitals),]
+      }
+  } else{
+    idate_vitals<-rep(NA, ncol(i_vitals))
+  }
+  matrix_phq9_labs_vitals[i,]<-unlist(c(phq9_fullscore_first_trimester[i,],
+                                  idate_labs, 
+                                  idate_vitals))
+  
+}
+colnames(matrix_phq9_labs_vitals)<-c(colnames(phq9_fullscore_first_trimester),
+                                      colnames(labs_data[, lab_relevant_columns]),
+                                      colnames(vital_data))
+matrix_phq9_labs_vitals<-matrix_phq9_labs_vitals[,!duplicated(colnames(matrix_phq9_labs_vitals))]
+
+matrix_phq9_labs_vitals<-data.frame(matrix_phq9_labs_vitals, stringsAsFactors = FALSE)
+
+matrix_phq9_labs_vitals[,-c(1:2)]<-apply(matrix_phq9_labs_vitals[,-c(1:2)],c(1,2),function(x){ifelse(is.nan(x),NA, as.numeric(x))})
+
+alldata<-merge(matrix_phq9_labs_vitals, container_norepeated, by.x="ID", by.y="record_id", all.x=TRUE)
+length(which(is.na(alldata$ID)))
+
+unique_all <- alldata[match(unique(alldata$ID),alldata$ID),]   #
+which(is.na(unique_all$ID))
+unique_all <- unique_all[-4813,]
+length(unique_all$ID)
+length(which(unique_all$black==1&unique_all$hispanic==0))  # 
+length(which(unique_all$white==1&unique_all$hispanic==0))  #
+length(which(unique_all$hispanic==1))   #  
+
+alldata$phq9_total
+# Identify colums that doesn't have a number in more than 10% of the samples
+dim(alldata)
+
+# Clean the data further
+ alldata_cleaned<-alldata[!is.na(as.numeric(alldata$wbc)),]
+ 
+unique_all_clean <- alldata_cleaned[match(unique(alldata$ID),alldata$ID),]   # 4328
+which(is.na(unique_all_clean$ID))
+unique_all_clean <- unique_all_clean[-which(is.na(unique_all_clean$ID)),]
+length(which(unique_all_clean$black==1&unique_all_clean$hispanic==0))  # 1439
+length(which(unique_all_clean$white==1&unique_all_clean$hispanic==0))  # 207
+length(which(unique_all_clean$hispanic==1))   #  794
+ 
+alldata_cleaned<-alldata_cleaned[!is.nan(as.numeric(alldata_cleaned$wbc)),]
+ 
+ dim(alldata_cleaned)
+#write.csv(alldata,file = 'C:/Users/Robin/Box/EMR/data/alldata_table.csv',col.names = T,row.names = F)
+ #write.csv(alldata_cleaned,file = 'C:/Users/Robin/Box/EMR/data/alldata_cleaned_table.csv',col.names = T,row.names = F)
+ 
+```
+
+###IMPUTING MISSING DATA
+```{r}
+
+#Remove columns that are more than 10% of the data is not available
+
+participants_all_merge<-apply(alldata_cleaned,2,function(x){
+   sum(!is.na(x))})/nrow(alldata_cleaned)*100
+
+participants_all_merge[participants_all_merge<90]
+
+alldata_cleaned<-alldata_cleaned[,-which(as.numeric(participants_all_merge)<90)]
+
+imputting<-apply(alldata_cleaned,2,function(x){
+  number_na<-sum(!is.na(x))
+  rr<-ifelse((number_na/length(x))==1,FALSE, TRUE)
+  if (rr==TRUE){
+    x[is.na(x)]<-mean(as.numeric(x),na.rm=TRUE)
+  }
+  return(x)
+  })
+
+alldata_cleaned_with_immputation<-imputting
+
+#not measured values
+notmeasured<-apply(alldata_cleaned_with_immputation,2,function(x){
+  nomeasurement<-sum(x=="")/length(x)})
+  
+alldata_cleaned_with_immputation<-alldata_cleaned_with_immputation[,notmeasured==0]
+
+alldata_cleaned_with_immputation<-data.frame(alldata_cleaned_with_immputation,stringsAsFactors = FALSE)
+
+alldata_cleaned_with_immputation[,"phq9_total_binary"]<-rep(0,nrow(alldata_cleaned_with_immputation))
+alldata_cleaned_with_immputation<-
+  alldata_cleaned_with_immputation[as.numeric(alldata_cleaned_with_immputation$phq9_total_nob)!=0,]
+
+alldata_cleaned_with_immputation<-
+  alldata_cleaned_with_immputation[(as.numeric(alldata_cleaned_with_immputation$phq9_total_nob)>0 & as.numeric(alldata_cleaned_with_immputation$phq9_total_nob)<5)| as.numeric(alldata_cleaned_with_immputation$phq9_total_nob)>5,]
+
+
+alldata_cleaned_with_immputation[as.numeric(alldata_cleaned_with_immputation$phq9_total_nob)>5,"phq9_total_binary"]<-1
+
+alldata_cleaned_with_immputation<-
+  alldata_cleaned_with_immputation[!is.na(as.numeric(alldata_cleaned_with_immputation$phq9_total_binary)),]
+
+
+positive_cases<-alldata_cleaned_with_immputation[which(as.numeric(alldata_cleaned_with_immputation$phq9_total_binary)==1),]
+negative_cases<-alldata_cleaned_with_immputation[which(as.numeric(alldata_cleaned_with_immputation$phq9_total_binary)==0),]
+
+negative_id<-sample(nrow(negative_cases),replace = FALSE, size=nrow(positive_cases))
+negative_cases<-negative_cases[negative_id, ]
+
+all_data_equalsize<-rbind(negative_cases, positive_cases)
+
+all_data_equalsize<-all_data_equalsize[sample(nrow(all_data_equalsize),replace = FALSE, size=nrow(all_data_equalsize)),]
+dim(all_data_equalsize)
+
+all_data_equalsize<-all_data_equalsize[,apply(all_data_equalsize,2,function(x){ifelse(length(unique(x))>1, TRUE, FALSE)})]
+
+write.table(data.frame(all_data_equalsize), 
+            file="C:/Users/Robin/Box/EMR/data/alldata_cleaned_with_immputation.csv",
+            col.names=TRUE, row.names = FALSE, sep=",")
+
+# Split the data
+alldata_cleaned_with_immputation[,"low_high_scores"]<-rep(NA,nrow(alldata_cleaned_with_immputation))
+alldata_cleaned_with_immputation[as.numeric(alldata_cleaned_with_immputation$phq9_total_nob)>1 &
+                                   as.numeric(alldata_cleaned_with_immputation$phq9_total_nob)<=5,"low_high_scores"]<-0
+#alldata_cleaned_with_immputation[as.numeric(alldata_cleaned_with_immputation$phq9_total_nob)>5 &
+#                                   as.numeric(alldata_cleaned_with_immputation$phq9_total_nob)=<9,"low_high_scores"]<-1
+alldata_cleaned_with_immputation[as.numeric(alldata_cleaned_with_immputation$phq9_total_nob)>9,"low_high_scores"]<-2   
+alldata_cleaned_with_immputation[as.numeric(alldata_cleaned_with_immputation$phq9_total_nob)>5 &
+                                   as.numeric(alldata_cleaned_with_immputation$phq9_total_nob)<=9,"low_high_scores"]<-1
+
+write.table(alldata_cleaned_with_immputation, 
+            file="C:/Users/Robin/Box/EMR/data/alldata_cleaned_with_immputation.csv",
+            col.names=TRUE, row.names = FALSE, sep=",")
+
+
+alldata_cleaned_with_immputation_training<-alldata_cleaned_with_immputation[!is.na(alldata_cleaned_with_immputation$low_high_scores),]
+
+alldata_cleaned_with_immputation_allzero<-alldata_cleaned_with_immputation[as.numeric(alldata_cleaned_with_immputation$phq9_total_nob)==0,]
+
+remove_phq9_values<-grep("phq9",colnames(alldata_cleaned_with_immputation))
+
+alldata_cleaned_with_immputation_training<-alldata_cleaned_with_immputation_training[,-remove_phq9_values]
+alldata_cleaned_with_immputation_allzero<-alldata_cleaned_with_immputation_allzero[,-remove_phq9_values]
+                                      
+alldata_cleaned_with_immputation_allzero[,"low_high_scores"]<-0                       
+write.table(alldata_cleaned_with_immputation_training, 
+            file="C:/Users/Robin/Box/EMR/data/alldata_cleaned_with_immputation_training.csv",
+            col.names=TRUE, row.names = FALSE, sep=",")
+
+write.table(alldata_cleaned_with_immputation_allzero, 
+            file="C:/Users/Robin/Box/EMR/data/alldata_cleaned_with_immputation_allzero.csv",
+            col.names=TRUE, row.names = FALSE, sep=",")
+
