@@ -14,7 +14,7 @@ A Jupyter Notebook that encompasses the ML pipeline for predicting perinatal dep
 
 ### `proportion_test.R`
 
-An R script focused on statistical testing of social demographic features, as outlined in Tables S6 and S7 of the manuscript. It provides a statistical foundation to the study, enabling a quantitative assessment of the relationships among the social demographic variables within the dataset.
+An R script focused on statistical testing of social demographic features, as outlined in Tables S6 and S7 of the manuscript. It enables a quantitative assessment of the relationships among the social demographic variables within the dataset.
 
 ## Study Highlights
 
